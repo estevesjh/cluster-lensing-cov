@@ -115,6 +115,17 @@ def _counts_bias_from_selection(config: dict, pkgrid, cosmology):
     )
     bias = model_obj.mean_bias().reshape(counts.shape)
 
+    # per-bin halo-model spectra (S_ij-weighted 2h + NFW 1h for h-Sigma)
+    from clenspy.clusters import BinHaloModelSpectra
+
+    spectra = BinHaloModelSpectra(
+        model_obj.zweights, model_obj.bias, pkgrid, cosmology,
+        concentration=model_obj.concentration,
+    )
+    pk_pairs = [
+        (spectra.pk_hh(b), spectra.pk_hm(b)) for b in range(len(bins))
+    ]
+
     bsel_cfg = sel.get("bsel_ls", {})
     if bsel_cfg.get("applied", False):
         pk_nl = PkGrid(
@@ -137,7 +148,10 @@ def _counts_bias_from_selection(config: dict, pkgrid, cosmology):
                 # large-scale plateau of the marginalised selection bias
                 _, b_large = engine.plateaus(lob, zob)
                 bias[iz, il] = b_large
-    return counts, bias
+        # b_sel replaces the 2h amplitude: fall back to linear bias
+        # (halo-model spectra would double-specify the 2h term)
+        pk_pairs = [(None, None)] * len(bins)
+    return counts, bias, pk_pairs
 
 
 def _clenspy_tables(config: dict) -> FrozenTables:
@@ -200,10 +214,27 @@ def _clenspy_tables(config: dict) -> FrozenTables:
 
     area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
     if "selection" in config:
-        counts, bias = _counts_bias_from_selection(config, pkgrid, cosmology)
+        counts, bias, pk_pairs = _counts_bias_from_selection(
+            config, pkgrid, cosmology
+        )
+        counts_bias_source = (
+            "clenspy BinnedClusterModel (selection block: "
+            f"{config['selection']['model']})"
+        )
     else:
+        # Precalculated tables (e.g. measured DES Y1 counts) are a
+        # legitimate covariance input — but say so loudly, because with
+        # --provider clenspy one might expect N_ij to be computed.
         counts = np.asarray(config["counts"], dtype=float)
         bias = np.asarray(config["bias"], dtype=float)
+        counts_bias_source = "precalculated config tables (counts/bias keys)"
+        pk_pairs = [(None, None)] * (
+            len(config["z_bins"]) * len(config["lambda_bins"])
+        )
+        print(
+            "NOTE: counts/bias taken from the config tables, NOT computed "
+            "by clenspy (add a 'selection' block to compute them)"
+        )
 
     samples = []
     zs_ref = np.linspace(1e-4, 3.0, 3000)
@@ -226,16 +257,19 @@ def _clenspy_tables(config: dict) -> FrozenTables:
             * np.interp(0.5 * (zmin + zmax), z_grid, growth_tab)
         )
         for il, (lmin, lmax) in enumerate(config["lambda_bins"]):
+            ib = iz * len(config["lambda_bins"]) + il
+            pk_hh, pk_hm = pk_pairs[ib]
             samples.append(
                 LensSample(
                     z_min=zmin, z_max=zmax, lam_min=lmin, lam_max=lmax,
                     counts=float(counts[iz, il]), bias=float(bias[iz, il]),
                     bN=float(counts[iz, il] * bias[iz, il]),
                     volume=volume, sigma_w=sigma_w,
+                    pk_hh=pk_hh, pk_hm=pk_hm,
                 )
             )
 
-    return from_clenspy(
+    tables = from_clenspy(
         pkgrid=pkgrid,
         cosmology=cosmology,
         lensing_kernel=_KernelShim(),
@@ -244,6 +278,9 @@ def _clenspy_tables(config: dict) -> FrozenTables:
         n_src_arcmin2=config["n_src_arcmin2"],
         survey_area_deg2=config["survey_area_deg2"],
     )
+    tables.meta["counts_bias_source"] = counts_bias_source
+    tables.meta["pk_backend"] = "camb (clenspy PkGrid)"
+    return tables
 
 
 BUZZARD_R_COMOVING_MPC_H = np.array(

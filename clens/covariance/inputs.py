@@ -59,7 +59,14 @@ class SourceInputs:
 
 @dataclass(frozen=True)
 class LensSample:
-    """One (z, lambda) cluster bin."""
+    """One (z, lambda) cluster bin.
+
+    ``pk_hh`` / ``pk_hm`` optionally carry the bin's halo-model spectra
+    (S_ij-weighted; e.g. ``clenspy.clusters.BinHaloModelSpectra``): the
+    Limber projector uses them when present and falls back to the
+    linear-bias forms ``bias^2 P_lin`` / ``bias P_lin`` otherwise (the
+    frozen Stage-A path always uses the fallback).
+    """
 
     z_min: float
     z_max: float
@@ -70,6 +77,8 @@ class LensSample:
     bN: float  # <bN> = b_eff * N (sample-variance weight)
     volume: float  # comoving shell volume over the footprint [Mpc^3]
     sigma_w: float  # sigma_R(R_eff) * D(z_mid) window r.m.s.
+    pk_hh: Callable | None = None  # P_hh(k, z) [Mpc^3], 2-halo
+    pk_hm: Callable | None = None  # P_hSigma(k, z) [Mpc^3], 2h + 1h
 
     @property
     def z_mid(self) -> float:

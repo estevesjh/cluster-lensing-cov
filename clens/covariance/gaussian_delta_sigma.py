@@ -92,10 +92,11 @@ class GaussianDeltaSigmaCov:
         )
         c_hh, shot = self.limber.c_ell_h(
             sample.z_min, sample.z_max, sample.bias,
-            sample.counts, self.geometry.area_sr,
+            sample.counts, self.geometry.area_sr, pk_hh=sample.pk_hh,
         )
         c_cross = self.limber.c_ell_h_sigma(
-            sample.z_min, sample.z_max, sample.bias, z_mid
+            sample.z_min, sample.z_max, sample.bias, z_mid,
+            pk_hm=sample.pk_hm,
         )
         n_shape = self.limber.shape_noise_sigma(z_mid)
 
