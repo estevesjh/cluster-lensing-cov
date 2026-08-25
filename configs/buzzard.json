@@ -1,0 +1,44 @@
+{
+  "name": "Buzzard mock (DES Y1-like)",
+  "survey_area_deg2": 1437.0,
+  "n_src_arcmin2": 6.28,
+  "sigma_gamma": 0.3,
+  "source_pz": {
+    "model": "whale",
+    "z_star": 0.74,
+    "m": 1.68,
+    "beta": 2.33,
+    "provenance": "DES Y1 source-distribution fit (same as des_y1.json)"
+  },
+  "cosmology": {
+    "h": 0.7,
+    "OmegaDE": 0.714,
+    "OmegaM": 0.286,
+    "OmegaB": 0.047,
+    "sigma8": 0.82,
+    "ns": 0.96
+  },
+  "z_bins": [[0.2, 0.35], [0.35, 0.5], [0.5, 0.65]],
+  "lambda_bins": [[20.0, 30.0], [30.0, 45.0], [45.0, 60.0], [60.0, 1000.0]],
+  "radial_range_physical_mpc": [0.03, 30.0],
+  "n_radial": 15,
+  "selection": {
+    "model": "hod",
+    "parameters": {
+      "log10_Mmin": 11.3852818,
+      "log10_M1": 12.6964410,
+      "alpha": 0.858693714,
+      "sigma_intr": 0.180949022,
+      "epsilon": 0.283887020,
+      "z_pivot": 0.4544
+    },
+    "quadrature_order": 64,
+    "photoz_sigma": 0.03,
+    "apply_projection": true,
+    "provenance": {
+      "hod": "Tan Xing's EXACT Buzzard-mock constants: des-nersc-cluster-scripts/cosmosis-models/mock_mcmc_buzzard_values.ini (epsilon=0.283887020 -- the mock-generation value; the widePlanck file keeps epsilon=0)",
+      "cosmology": "Buzzard fiducial from the same values file (h=0.70, Om=0.286, Ob=0.047, ns=0.96, sigma8=0.82)",
+      "photoz_sigma": "sigma_z=0.03 per bin, generate_mock_dv.ini [sel_function]"
+    }
+  }
+}
