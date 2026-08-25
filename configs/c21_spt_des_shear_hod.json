@@ -1,0 +1,48 @@
+{
+  "source": {
+    "paper": "Costanzi et al. 2021",
+    "arxiv": "2010.13800",
+    "bibcode": "2021PhRvD.103d3522C",
+    "paper_pdf": "/Users/jesteves/Documents/Dev/cluster-lensing-cov/papers/Costanzi2021.pdf",
+    "data_combination": "DES-NC+SPT-OMR",
+    "scatter_model": "BKG",
+    "weak_lensing_followup": "32 SPT profiles: 19 Megacam + 13 HST",
+    "table": "Table IV / tab:results"
+  },
+  "target_log_normal_parameters": {
+    "A_lambda": 76.3,
+    "B_lambda": 0.957,
+    "C_lambda": 0.48,
+    "D_lambda": 0.217,
+    "M_pivot": 300000000000000.0,
+    "z_pivot": 0.45
+  },
+  "hod_parameters": {
+    "log10_Mmin": 11.3852818,
+    "log10_M1": 12.48609042403746,
+    "alpha": 0.9382005643292363,
+    "sigma_lambda": 0.22121433669044918,
+    "epsilon": 0.4726737666757038,
+    "z_pivot": 0.45
+  },
+  "fit": {
+    "success": true,
+    "message": "Both `ftol` and `xtol` termination conditions are satisfied.",
+    "cost": 0.06798097598918124,
+    "rmse_log_relative": 0.014575340475137838,
+    "max_abs_log_relative": 0.054062240106029294,
+    "mass_log10_range": [
+      13.0,
+      15.5
+    ],
+    "redshift_grid": [
+      0.2,
+      0.35,
+      0.5,
+      0.65
+    ],
+    "n_mass": 80
+  },
+  "interpretation": "Empirical HOD-equivalent fit to the C21 intrinsic lambda-M moments. C21 publishes no native HOD parameters.",
+  "selection_method": "Use the fitted HOD P(lambda_tr|M,z) in the existing S_ij Gauss-Legendre contraction, then apply the existing P(lambda_ob|lambda_tr,z) kernel."
+}

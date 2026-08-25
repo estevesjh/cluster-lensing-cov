@@ -25,17 +25,20 @@ class CovDeltaSigma(object):
     NOTE: all units are h-free
     NOTE: there's no intrinsic variance yet
     """
-    def __init__(self, co, su, sr, fsky, slicing=False, dz_slicing=0, halo_shot_noise_only=False, cosmic_shear_no_shot=False):
+    def __init__(self, co, su, sr, fsky, slicing=False, dz_slicing=0, halo_shot_noise_only=False, cosmic_shear_no_shot=False, survey_area_sq_deg=None):
         """
         Args:
             co: CosmoParameters object
             su: Survey object
             sr: ScalingRelation object
+            survey_area_sq_deg: survey area in square degrees; if omitted,
+                inferred from fsky
         """
         self.co = co
         self.su = su
         self.sr = sr
         self.fsky = fsky
+        self.survey_area_sq_deg = fsky * 41253. if survey_area_sq_deg is None else survey_area_sq_deg
         self.slicing = slicing
         self.dz_slicing = dz_slicing
         self.halo_shot_noise_only = halo_shot_noise_only
@@ -44,12 +47,13 @@ class CovDeltaSigma(object):
         else:
             self.cosmic_shear_no_shot = cosmic_shear_no_shot
 
-        self.aps = AngularPowerSpectra(co=self.co, su=self.su, sr=self.sr)
+        self.aps = AngularPowerSpectra(co=self.co, su=self.su, sr=self.sr, survey_area_sq_deg=self.survey_area_sq_deg)
         self.bf = BesselForCovTheta()
         #astropy_dist = FlatLambdaCDM(H0=self.co.h*100, Om0=self.co.OmegaM)
         astropy_dist = w0waCDM(H0=self.co.h*100, Om0=self.co.OmegaM, Ode0=self.co.OmegaDE,
             w0=self.co.w0, wa=self.co.wa)
-        self.chi = astropy_dist.comoving_distance
+        # Astropy 8 makes the redshift argument positional-only.
+        self.chi = lambda z: astropy_dist.comoving_distance(z)
 
     def calc_mean(self, lambda_min, lambda_max, zh_min, zh_max, rp_min=0.1, rp_max=100):
         lp = LensingProfiles(co=self.co, su=self.su, zh_min=zh_min, zh_max=zh_max, lambda_min=lambda_min, lambda_max=lambda_max)

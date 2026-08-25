@@ -26,7 +26,8 @@ class LensingKernel(object):
         #astropy_dist = FlatLambdaCDM(H0=self.co.h*100, Om0=self.co.OmegaM)
         astropy_dist = w0waCDM(H0=self.co.h*100, Om0=self.co.OmegaM, Ode0=self.co.OmegaDE,
             w0=self.co.w0, wa=self.co.wa)
-        self.chi = astropy_dist.comoving_distance
+        # Astropy 8 makes the redshift argument positional-only.
+        self.chi = lambda z: astropy_dist.comoving_distance(z)
 
         self.cosmo_ying = CosmoParams(omega_M_0=self.co.OmegaM, omega_b_0=self.co.OmegaB, omega_lambda_0=self.co.OmegaDE, h=self.co.h, sigma_8=self.co.sigma8, n=self.co.ns, tau=self.co.tau) # Ying's
 

@@ -1,0 +1,12 @@
+numpy>=2.0
+scipy>=1.14
+astropy>=7.0
+h5py
+matplotlib
+seaborn
+pandas
+fitsio
+healpy
+emcee
+corner
+pytest

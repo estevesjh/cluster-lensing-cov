@@ -25,11 +25,12 @@ class AngularPowerSpectra(object):
     calaculating various C_ell's that will be used in covariance matrices
     update Sep 2019: ell+1/2 in Limber
     """
-    def __init__(self, co, su, sr, use_halofit=False):
+    def __init__(self, co, su, sr, use_halofit=False, survey_area_sq_deg=1437.):
         self.co = co
         self.su = su
         self.sr = sr
         self.use_halofit = use_halofit
+        self.survey_area_sq_deg = survey_area_sq_deg
 
         rho_crit = cn.rho_crit_with_h * co.h**2
         self.rho_mean = rho_crit * self.co.OmegaM # comoving!
@@ -38,7 +39,8 @@ class AngularPowerSpectra(object):
         #astropy_dist = FlatLambdaCDM(H0=self.co.h*100, Om0=self.co.OmegaM)
         astropy_dist = w0waCDM(H0=self.co.h*100, Om0=self.co.OmegaM, Ode0=self.co.OmegaDE,
             w0=self.co.w0, wa=self.co.wa)
-        self.chi = astropy_dist.comoving_distance
+        # Astropy 8 makes the redshift argument positional-only.
+        self.chi = lambda z: astropy_dist.comoving_distance(z)
 
         self.cosmo_ying = CosmoParams(omega_M_0=self.co.OmegaM, omega_b_0=self.co.OmegaB, omega_lambda_0=self.co.OmegaDE, h=self.co.h, sigma_8=self.co.sigma8, n=self.co.ns, tau=self.co.tau) # Ying's
         #print('sigma8', self.cosmo_ying.sigma_8)
@@ -162,7 +164,7 @@ class AngularPowerSpectra(object):
         zh_max_list = zh_bins[1:]
 
         # get the halo number density and bias
-        survey_area_sq_deg = 1437.#41253.#/48.# exact value doesn't matter
+        survey_area_sq_deg = self.survey_area_sq_deg
         area_sr = 4.*np.pi*survey_area_sq_deg/41253.
 
         try: # are we using PrecalculatedCountsBias() ? 
@@ -219,7 +221,7 @@ class AngularPowerSpectra(object):
         try: # are we using PrecalculatedCountsBias() ?
             b = self.sr.lens_bias
         except:
-            survey_area_sq_deg = 1437.
+            survey_area_sq_deg = self.survey_area_sq_deg
             cc = ClusterCounts(cosmo_parameters=self.co, scaling_relation=self.sr)
             cc.calc_counts(zmin=zh_min, zmax=zh_max, lambda_min=lambda_min, lambda_max=lambda_max, survey_area_sq_deg=survey_area_sq_deg)
             b = cc.cluster_mean_bias

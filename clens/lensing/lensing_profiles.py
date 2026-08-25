@@ -31,7 +31,8 @@ class LensingProfiles(object):
         #astropy_dist = FlatLambdaCDM(H0=self.co.h*100, Om0=self.co.OmegaM)
         astropy_dist = w0waCDM(H0=self.cp.h*100, Om0=self.cp.OmegaM, Ode0=self.cp.OmegaDE,
             w0=self.cp.w0, wa=self.cp.wa)
-        self.chi = astropy_dist.comoving_distance
+        # Astropy 8 makes the redshift argument positional-only.
+        self.chi = lambda z: astropy_dist.comoving_distance(z)
 
     def calc_DeltaSigma(self):
         zh = 0.5*(self.zh_min + self.zh_max)

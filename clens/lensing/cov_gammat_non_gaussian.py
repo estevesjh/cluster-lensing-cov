@@ -34,7 +34,8 @@ class CovgammatNonGaussian(object):
         #astropy_dist = FlatLambdaCDM(H0=self.co.h*100, Om0=self.co.OmegaM)
         astropy_dist = w0waCDM(H0=self.cp.h*100, Om0=self.cp.OmegaM, Ode0=self.cp.OmegaDE,
             w0=self.cp.w0, wa=self.cp.wa)
-        self.chi = astropy_dist.comoving_distance
+        # Astropy 8 makes the redshift argument positional-only.
+        self.chi = lambda z: astropy_dist.comoving_distance(z)
         self.lk = LensingKernel(co=self.co, su=self.su)
         self.ln_ell = np.linspace(np.log(1), np.log(1e+5), 500) 
         #self.ln_ell = np.linspace(np.log(1e-4), np.log(1e+7), 50) 

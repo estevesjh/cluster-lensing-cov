@@ -12,6 +12,12 @@ class RichnessSelection(object):
         self.lambda_max = lambda_max
 
     def lnM_selection(self, lnM, z):
+        if hasattr(self.scaling_relation, "selection_probability"):
+            return self.scaling_relation.selection_probability(
+                np.exp(np.asarray(lnM, dtype=float)), z,
+                self.lambda_min, self.lambda_max,
+            )
+
         lnlambda_mean = self.scaling_relation.lnlambda_lnM(lnM, z)
         sigma_lambda = self.scaling_relation.scatter(lnM, z)
 

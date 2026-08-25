@@ -1,0 +1,12 @@
+.venv/
+.mplconfig/
+.cache/
+__pycache__/
+*.egg-info/
+results/
+data/buzzard/*.npz
+tmp/
+papers/
+reports/
+*.png
+*.pdf
