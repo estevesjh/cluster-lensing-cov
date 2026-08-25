@@ -1,0 +1,11 @@
+{
+  "engine": "fftlog (clenspy.utils.fftlog_cov)",
+  "q": 1.0,
+  "n_radial": 15,
+  "radial_range_physical_mpc": [
+    0.03,
+    30.0
+  ],
+  "provider": {},
+  "ordering": "z-major, richness-fast, radial-fast"
+}

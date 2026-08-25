@@ -154,12 +154,21 @@ def _clenspy_tables(config: dict) -> FrozenTables:
     from clens.util.survey import Survey
 
     co = CosmoParameters(**config["cosmology"])
-    cosmology = w0waCDM(
+    base_cosmology = w0waCDM(
         H0=100 * co.h, Om0=co.OmegaM, Ode0=co.OmegaDE, w0=co.w0, wa=co.wa
     )
-    # attach amplitude/tilt so PkGrid does not fall back to its defaults
-    cosmology.sigma8 = co.sigma8
-    cosmology.n_s = co.ns
+
+    class _CosmoWithAmplitude:
+        """Astropy cosmologies are frozen; delegate everything and add the
+        sigma8/n_s attributes PkGrid reads for the CAMB spec."""
+
+        sigma8 = co.sigma8
+        n_s = co.ns
+
+        def __getattr__(self, name):
+            return getattr(base_cosmology, name)
+
+    cosmology = _CosmoWithAmplitude()
     pkgrid = PkGrid(
         backend="camb",
         cosmo=cosmology,
@@ -237,26 +246,52 @@ def _clenspy_tables(config: dict) -> FrozenTables:
     )
 
 
+BUZZARD_R_COMOVING_MPC_H = np.array(
+    [0.200, 0.286, 0.409, 0.585, 0.836, 1.196, 1.710, 2.445, 3.497, 5.000]
+)
+
+
 def reproduce(
     config: dict,
     output_dir: str | Path,
     provider: str = "clenspy",
     frozen_dir: str | Path | None = None,
+    radial_grid: str = "paper",
 ) -> dict:
     """Run the full covariance pipeline for one config; returns the
-    assembled matrices (also written to ``output_dir``)."""
+    assembled matrices (also written to ``output_dir``).
+
+    ``radial_grid="buzzard"`` uses the Buzzard jackknife comoving Mpc/h
+    bin edges (converted to no-h comoving Mpc) instead of the config's
+    physical range.
+    """
     if provider == "frozen":
         tables = FrozenTables.load(
             frozen_dir or ROOT / "validation" / "frozen_inputs"
         )
     else:
         tables = _clenspy_tables(config)
-    rmin, rmax = config["radial_range_physical_mpc"]
-    assembler = CovarianceAssembler(
-        tables=tables,
-        n_radial=int(config["n_radial"]),
-        radial_range_physical_mpc=(float(rmin), float(rmax)),
-    )
+    if radial_grid == "buzzard":
+        h = float(config["cosmology"]["h"])
+        ratio = BUZZARD_R_COMOVING_MPC_H[1] / BUZZARD_R_COMOVING_MPC_H[0]
+        edges = np.geomspace(
+            BUZZARD_R_COMOVING_MPC_H[0] / np.sqrt(ratio),
+            BUZZARD_R_COMOVING_MPC_H[-1] * np.sqrt(ratio),
+            len(BUZZARD_R_COMOVING_MPC_H) + 1,
+        )
+        assembler = CovarianceAssembler(
+            tables=tables,
+            n_radial=len(BUZZARD_R_COMOVING_MPC_H),
+            radial_range_physical_mpc=(edges[0] / h, edges[-1] / h),
+            radial_mode="comoving",
+        )
+    else:
+        rmin, rmax = config["radial_range_physical_mpc"]
+        assembler = CovarianceAssembler(
+            tables=tables,
+            n_radial=int(config["n_radial"]),
+            radial_range_physical_mpc=(float(rmin), float(rmax)),
+        )
     return assembler.run(output_dir)
 
 
@@ -270,12 +305,15 @@ def main() -> None:
     parser.add_argument(
         "--frozen-dir", default=str(ROOT / "validation" / "frozen_inputs")
     )
+    parser.add_argument(
+        "--radial-grid", choices=("paper", "buzzard"), default="paper"
+    )
     args = parser.parse_args()
 
     config = json.loads(Path(args.config).read_text())
     result = reproduce(
         config, args.output, provider=args.provider,
-        frozen_dir=args.frozen_dir,
+        frozen_dir=args.frozen_dir, radial_grid=args.radial_grid,
     )
     print(
         f"wrote {Path(args.output) / 'covariance.npz'}: "

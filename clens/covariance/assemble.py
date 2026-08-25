@@ -30,6 +30,7 @@ class CovarianceAssembler:
     n_radial: int
     radial_range_physical_mpc: tuple[float, float]
     q: float = 1.0
+    radial_mode: str = "physical"  # or "comoving": range already comoving Mpc
 
     def run(self, output_dir: str | Path | None = None) -> dict:
         t = self.tables
@@ -64,9 +65,11 @@ class CovarianceAssembler:
                 sl = slice(block * nrad, (block + 1) * nrad)
                 labels.append(f"z{iz}_lambda{ilam}")
 
-                blocks = engine.compute(
-                    s, rp_min=rmin_phys / a, rp_max=rmax_phys / a, n_rp=nrad
-                )
+                if self.radial_mode == "comoving":
+                    rp_lo, rp_hi = rmin_phys, rmax_phys
+                else:
+                    rp_lo, rp_hi = rmin_phys / a, rmax_phys / a
+                blocks = engine.compute(s, rp_min=rp_lo, rp_max=rp_hi, n_rp=nrad)
                 cov_cosmic[sl, sl] = blocks.cosmic_shear / a**4
                 cov_shape[sl, sl] = blocks.shape_noise / a**4
                 cov_cross[sl, sl] = blocks.cross / a**4
