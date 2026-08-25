@@ -46,18 +46,38 @@ def _block(matrix, b, n=15):
     return matrix[b * n:(b + 1) * n, b * n:(b + 1) * n]
 
 
+def _legacy_white_truncation_factor() -> float:
+    """The legacy trapz integrated the white (shot x shape-noise) term
+    only over [1/theta_max, 100/theta_min], capturing 98.854% of
+    int l J2bar^2 dl.  The factor is dimensionless (the range scales
+    with the bin), so it is one number for the geometric binning."""
+    from clenspy.utils.fftlog_cov import j2_bin_averaged
+
+    rho = (30.0 / 0.03) ** (1.0 / 15.0)
+    tmin, tmax = 1e-3, 1e-3 * rho
+    lnell = np.arange(np.log(1.0 / tmax), np.log(100.0 / tmin), 1e-3)
+    ell = np.exp(lnell)
+    trunc = np.trapezoid(ell**2 * j2_bin_averaged(ell, tmin, tmax) ** 2, lnell)
+    return trunc * (tmax**2 - tmin**2) / 2.0
+
+
 def test_diagonals_match_legacy(new_result, legacy_reference):
-    """Per-block diagonal agreement of the total covariance."""
+    """Per-block diagonal agreement of the total covariance.
+
+    The legacy pipeline under-integrates the white shape-noise term by
+    the quantified truncation factor 0.988544 (its ell range cuts the
+    l^-3 tail of J2bar^2) — the FFTLog result integrates it exactly, so
+    where shape noise dominates the ratio new/legacy sits at
+    1/0.988544 = 1.01159.  The gate brackets the ratio between 1 (exact
+    agreement) and the truncation ceiling."""
     new = new_result["covariance"]
     ref = legacy_reference["covariance"]
     assert new.shape == ref.shape
-    worst = 0.0
+    ceiling = 1.0 / _legacy_white_truncation_factor() + 5e-3
     for b in range(12):
-        d_new = np.diag(_block(new, b))
-        d_ref = np.diag(_block(ref, b))
-        rel = np.abs(d_new / d_ref - 1.0)
-        worst = max(worst, rel.max())
-    assert worst < 5e-3, worst
+        ratio = np.diag(_block(new, b)) / np.diag(_block(ref, b))
+        assert np.all(ratio > 1.0 - 5e-3), (b, ratio.min())
+        assert np.all(ratio < ceiling), (b, ratio.max())
 
 
 def test_correlation_matrices_match(new_result, legacy_reference):
@@ -67,15 +87,20 @@ def test_correlation_matrices_match(new_result, legacy_reference):
         bn, br = _block(new, b), _block(ref, b)
         cn = bn / np.sqrt(np.outer(np.diag(bn), np.diag(bn)))
         cr = br / np.sqrt(np.outer(np.diag(br), np.diag(br)))
-        assert np.allclose(cn, cr, atol=5e-3), b
+        # atol allows the ~1.2% normalization shift from the legacy
+        # white-term truncation on shape-noise-dominated diagonals
+        assert np.allclose(cn, cr, atol=1.5e-2), b
 
 
 def test_per_term_blocks_match(new_result, legacy_reference):
-    for key in (
-        "covariance_cosmic_shear",
-        "covariance_shape_noise",
-        "covariance_cross",
-    ):
+    """Smooth terms (cosmic shear, cross) agree tightly; the shape-noise
+    term carries the documented legacy white-truncation offset."""
+    tolerances = {
+        "covariance_cosmic_shear": 8e-3,
+        "covariance_cross": 8e-3,
+        "covariance_shape_noise": 1.3e-2,  # legacy truncation ~1.16%
+    }
+    for key, tol in tolerances.items():
         new = new_result[key]
         ref = legacy_reference[key]
         for b in range(12):
@@ -83,7 +108,51 @@ def test_per_term_blocks_match(new_result, legacy_reference):
             d_ref = np.diag(_block(ref, b))
             keep = d_ref > 0
             rel = np.abs(d_new[keep] / d_ref[keep] - 1.0)
-            assert rel.max() < 1e-2, (key, b, rel.max())
+            assert rel.max() < tol, (key, b, rel.max())
+
+
+def test_fftlog_vs_converged_trapz(tables, new_result):
+    """The true numerics gate: FFTLog vs the trapz reference on an
+    EXTENDED ell range (no legacy truncation), same C_ell inputs,
+    one representative bin — <= 2e-3 on the diagonal."""
+    from clens.covariance import GaussianDeltaSigmaCov
+    from clens.covariance.limber import LimberProjector
+    from clens.covariance.reference import reference_cov_trapz
+
+    s = tables.samples[0]
+    a = 1.0 / (1.0 + s.z_mid)
+    chi_h = float(tables.cosmology.chi(s.z_mid))
+    n_rp = 15
+    theta_edges = (
+        np.exp(np.linspace(np.log(0.03 / a), np.log(30.0 / a), n_rp + 1))
+        / chi_h
+    )
+    lim = LimberProjector(tables.cosmology, tables.source)
+    c_sigma = lim.c_ell_sigma(0.1, min(2.0, tables.source.zs_max - 0.1),
+                              s.z_mid)
+    c_hh, shot = lim.c_ell_h(s.z_min, s.z_max, s.bias, s.counts,
+                             tables.geometry.area_sr)
+    n_shape = lim.shape_noise_sigma(s.z_mid)
+    C_total = (c_hh + shot) * (c_sigma + n_shape)
+
+    eng = GaussianDeltaSigmaCov(tables.cosmology, tables.source,
+                                tables.geometry)
+    blocks = eng.compute(s, rp_min=0.03 / a, rp_max=30.0 / a, n_rp=n_rp)
+    new_diag = np.diag(blocks.cosmic_shear + blocks.shape_noise) / 1e-24
+
+    # converged trapz: widen the per-pair range far beyond the legacy cut
+    import clens.covariance.reference as refmod
+
+    old = (refmod.SCALING_FOR_ELL_MIN, refmod.SCALING_FOR_ELL_MAX)
+    refmod.SCALING_FOR_ELL_MIN, refmod.SCALING_FOR_ELL_MAX = 1e-2, 3e4
+    try:
+        cov_ref = reference_cov_trapz(
+            lim.ell, C_total, theta_edges, tables.geometry.f_sky
+        )
+    finally:
+        refmod.SCALING_FOR_ELL_MIN, refmod.SCALING_FOR_ELL_MAX = old
+    rel = np.abs(new_diag / np.diag(cov_ref) - 1.0)
+    assert rel.max() < 2e-3, rel.max()
 
 
 def test_radii_match(new_result, legacy_reference):

@@ -1,4 +1,14 @@
-.PHONY: validation-plots plain-ratio plain-ratio-y3 hod-lognormal-comparison test
+.PHONY: validation-plots plain-ratio plain-ratio-y3 hod-lognormal-comparison test freeze covariance-v2 stage-a
+
+freeze:
+	.venv/bin/python scripts/freeze_inputs.py --config configs/des_y1.json
+
+covariance-v2:
+	.venv/bin/python scripts/reproduce_covariance_v2.py --config configs/des_y1.json \
+		--output output/covariance_v2 --provider frozen
+
+stage-a:
+	MPLCONFIGDIR=.mplconfig XDG_CACHE_HOME=.cache .venv/bin/python -m pytest -q tests/test_stage_a_equivalence.py
 
 validation-plots:
 	MPLCONFIGDIR=.mplconfig XDG_CACHE_HOME=.cache .venv/bin/python scripts/make_validation_plots.py
