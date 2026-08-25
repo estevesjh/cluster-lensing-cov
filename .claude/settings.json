@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sg -p *)",
+      "mcp__mcp-ads-arxiv__smart_fetch_paper_content",
+      "mcp__mcp-ads-arxiv__flexible_paper_search",
+      "mcp__mcp-ads-arxiv__read_paper"
+    ]
+  }
+}

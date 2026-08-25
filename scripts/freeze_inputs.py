@@ -91,7 +91,11 @@ def main() -> None:
 
     # ---- 2. lensing kernels per z-bin ----------------------------------
     kernel = LensingKernel(co, su)
-    zl_grid = np.linspace(0.1, su.zs_max - 0.02, 200)
+    # sample on the EXACT legacy interp1d nodes: the Sigma kernel crosses
+    # the Sigma_crit singularity at z_s = z_h and is jagged below z_h, so
+    # resampling on any other grid distorts it (np.interp on these nodes
+    # reproduces the legacy linear interp1d exactly)
+    zl_grid = np.linspace(0.1, su.zs_max - 0.01, 100)
     q_plain = kernel.kernel_z_interp(zl_grid)
     q_sigma = {}
     mean_sc = {}
@@ -105,6 +109,7 @@ def main() -> None:
     np.savez(
         out / "kernels.npz",
         zl=zl_grid,
+        zs_max=np.array(su.zs_max, dtype=float),
         q_plain=q_plain,
         z_h=np.array([0.5 * (a + b) for a, b in config["z_bins"]]),
         q_sigma=np.array([q_sigma[f"{0.5*(a+b):.4f}"] for a, b in config["z_bins"]]),

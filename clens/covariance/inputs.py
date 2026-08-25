@@ -191,6 +191,7 @@ class FrozenTables:
             q_sigma=q_sigma,
             mean_sigma_crit=mean_sigma_crit,
             f_src_behind=f_src_behind,
+            zs_max=float(ker_data["zs_max"]) if "zs_max" in ker_data else 3.0,
         )
 
         samples = tuple(
