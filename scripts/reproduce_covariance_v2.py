@@ -24,6 +24,122 @@ from clens.covariance import CovarianceAssembler, FrozenTables, LensSample
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _counts_bias_from_selection(config: dict, pkgrid, cosmology):
+    """Counts and bias from the clenspy cluster model (config has a
+    'selection' block: HOD or lognormal MOR, EMG projection kernel when
+    apply_projection, photo-z K_j, optional b_sel_ls large-scale bias).
+
+    Legacy selection parameters are quoted in Msun/h (RichnessSelection
+    convention) — converted to physical here.
+    """
+    import numpy as np
+    from clenspy.clusters import (
+        AnalyticLogNormalKernel,
+        BinDefinition,
+        BinnedClusterModel,
+        EmgRichnessKernel,
+        HodMOR,
+        HodParams,
+        LogNormalMOR,
+        LogNormalParams,
+        SelBiasEngine,
+        XiNL,
+        omega_z_const_factory,
+    )
+    from clenspy.cosmology import PkGrid
+    from clenspy.halo.mass_function import (
+        SigmaGrid,
+        Tinker08MassFunction,
+        Tinker10Bias,
+    )
+
+    sel = config["selection"]
+    h = float(config["cosmology"]["h"])
+    params = dict(sel.get("parameters", {}))
+    model = str(sel["model"]).lower()
+    if model in {"hod", "mor", "costanzi_hod"}:
+        if "sigma_lambda" in params:
+            params["sigma_intr"] = params.pop("sigma_lambda")
+        mor = HodMOR(
+            HodParams(
+                M_min=10.0 ** params["log10_Mmin"] / h,
+                M1=10.0 ** params["log10_M1"] / h,
+                alpha=params["alpha"],
+                sigma_intr=params["sigma_intr"],
+                epsilon=params.get("epsilon", 0.0),
+                z_pivot=params.get("z_pivot", 0.4544),
+            )
+        )
+    elif model in {"lognormal", "log_normal", "logn"}:
+        base = LogNormalParams.costanzi21(h)
+        mor = LogNormalMOR(
+            LogNormalParams(
+                A_lambda=params.get("A_lambda", base.A_lambda),
+                B_lambda=params.get("B_lambda", base.B_lambda),
+                C_lambda=params.get("C_lambda", base.C_lambda),
+                D_lambda=params.get("D_lambda", base.D_lambda),
+                # legacy configs quote M_pivot in Msun/h
+                M_pivot=params.get("M_pivot", 3.0e14) / h,
+                z_pivot=params.get("z_pivot", base.z_pivot),
+            )
+        )
+    else:
+        raise ValueError(f"unknown selection model: {model}")
+
+    kernel = (
+        EmgRichnessKernel()
+        if sel.get("apply_projection", False)
+        else AnalyticLogNormalKernel()
+    )
+    photoz_sigma = sel["photoz_sigma"]
+    if np.ndim(photoz_sigma) == 0:
+        photoz_sigma = [float(photoz_sigma)] * len(config["lambda_bins"])
+
+    bins = tuple(
+        BinDefinition(lmin, lmax, zmin, zmax, sigma_z=photoz_sigma[il])
+        for (zmin, zmax) in config["z_bins"]
+        for il, (lmin, lmax) in enumerate(config["lambda_bins"])
+    )
+    area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
+    model_obj = BinnedClusterModel(
+        pkgrid=pkgrid,
+        mor=mor,
+        kernel=kernel,
+        bins=bins,
+        cosmology=cosmology,
+        omega_z=omega_z_const_factory(area_sr),
+        n_q=int(sel.get("quadrature_order", 64)),
+    )
+    counts = model_obj.counts().reshape(
+        len(config["z_bins"]), len(config["lambda_bins"])
+    )
+    bias = model_obj.mean_bias().reshape(counts.shape)
+
+    bsel_cfg = sel.get("bsel_ls", {})
+    if bsel_cfg.get("applied", False):
+        pk_nl = PkGrid(
+            backend="camb", cosmo=cosmology, nonlinear=True,
+            k_range=(1e-5, 2e4), z_range=(0.0, 2.0), nk=700, nz=81,
+        )
+        sg = SigmaGrid(pkgrid, cosmo=cosmology)
+        engine = SelBiasEngine(
+            cosmology=cosmology,
+            xi_nl=XiNL(pk_nl),
+            hmf=Tinker08MassFunction(sg),
+            bias=Tinker10Bias(sg),
+            mor=mor,
+        )
+        open_lob = float(bsel_cfg.get("open_bin_lob", 80.0))
+        for iz, (zmin, zmax) in enumerate(config["z_bins"]):
+            zob = 0.5 * (zmin + zmax)
+            for il, (lmin, lmax) in enumerate(config["lambda_bins"]):
+                lob = open_lob if lmax >= 999.0 else 0.5 * (lmin + lmax)
+                # large-scale plateau of the marginalised selection bias
+                _, b_large = engine.plateaus(lob, zob)
+                bias[iz, il] = b_large
+    return counts, bias
+
+
 def _clenspy_tables(config: dict) -> FrozenTables:
     """Stage-B provider: CAMB P(k) via clenspy; kernels from the legacy
     LensingKernel (until the kernel engine moves to clenspy); counts/bias
@@ -74,8 +190,11 @@ def _clenspy_tables(config: dict) -> FrozenTables:
             return float(lk.fsrc_behind_zh(z_h))
 
     area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
-    counts = np.asarray(config["counts"], dtype=float)
-    bias = np.asarray(config["bias"], dtype=float)
+    if "selection" in config:
+        counts, bias = _counts_bias_from_selection(config, pkgrid, cosmology)
+    else:
+        counts = np.asarray(config["counts"], dtype=float)
+        bias = np.asarray(config["bias"], dtype=float)
 
     samples = []
     zs_ref = np.linspace(1e-4, 3.0, 3000)
@@ -118,6 +237,29 @@ def _clenspy_tables(config: dict) -> FrozenTables:
     )
 
 
+def reproduce(
+    config: dict,
+    output_dir: str | Path,
+    provider: str = "clenspy",
+    frozen_dir: str | Path | None = None,
+) -> dict:
+    """Run the full covariance pipeline for one config; returns the
+    assembled matrices (also written to ``output_dir``)."""
+    if provider == "frozen":
+        tables = FrozenTables.load(
+            frozen_dir or ROOT / "validation" / "frozen_inputs"
+        )
+    else:
+        tables = _clenspy_tables(config)
+    rmin, rmax = config["radial_range_physical_mpc"]
+    assembler = CovarianceAssembler(
+        tables=tables,
+        n_radial=int(config["n_radial"]),
+        radial_range_physical_mpc=(float(rmin), float(rmax)),
+    )
+    return assembler.run(output_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/des_y1.json")
@@ -131,18 +273,10 @@ def main() -> None:
     args = parser.parse_args()
 
     config = json.loads(Path(args.config).read_text())
-    if args.provider == "frozen":
-        tables = FrozenTables.load(args.frozen_dir)
-    else:
-        tables = _clenspy_tables(config)
-
-    rmin, rmax = config["radial_range_physical_mpc"]
-    assembler = CovarianceAssembler(
-        tables=tables,
-        n_radial=int(config["n_radial"]),
-        radial_range_physical_mpc=(float(rmin), float(rmax)),
+    result = reproduce(
+        config, args.output, provider=args.provider,
+        frozen_dir=args.frozen_dir,
     )
-    result = assembler.run(args.output)
     print(
         f"wrote {Path(args.output) / 'covariance.npz'}: "
         f"{result['covariance'].shape}, provider={args.provider}"

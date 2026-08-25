@@ -11,7 +11,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from reproduce_covariance import ROOT, _load_config, reproduce
+from reproduce_covariance_v2 import ROOT, reproduce
+
+
+def _load_config(path):
+    with Path(path).open(encoding="utf-8") as stream:
+        return json.load(stream)
 
 
 _C21_HOD_CONFIG = json.loads(
@@ -72,7 +77,7 @@ def compare(base_config, output_root, radial_grid, reuse=False):
         if reuse and covariance_path.is_file():
             products[model] = None
         else:
-            products[model] = reproduce(config, model_dir, radial_grid=radial_grid)
+            products[model] = reproduce(config, model_dir, provider="clenspy")
 
     n_z = len(base_config["z_bins"])
     n_lambda = len(base_config["lambda_bins"])
