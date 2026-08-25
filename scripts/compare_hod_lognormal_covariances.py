@@ -11,7 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from reproduce_covariance_v2 import ROOT, reproduce
+from reproduce_covariance import ROOT, reproduce
 
 
 def _load_config(path):

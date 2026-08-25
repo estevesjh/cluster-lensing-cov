@@ -1,413 +1,287 @@
 #!/usr/bin/env python3
-"""Reproduce the Wu et al. (2019) analytic DeltaSigma covariance.
+"""Reproduce the analytic DeltaSigma + N_ij covariances — FFTLog pipeline.
 
-The upstream implementation evaluates one lens redshift/richness bin at a
-time.  This driver assembles those 15x15 blocks into the z-major, richness-
-fast ordering used by the DES validation data.  Cross-bin terms are left zero
-because the upstream API has no cross-bin covariance calculation.
+Successor of ``reproduce_covariance.py``: same JSON configs, same output
+schema (z-major, richness-fast 180x180 block matrix, per-term files), but
+the ell-integration runs through the clenspy FFTLog engine and all model
+ingredients enter through the ``clens.covariance.inputs`` contract.
+
+Providers:
+  --provider frozen   Stage-A: the M0 frozen snapshots (legacy EH physics)
+  --provider clenspy  Stage-B: live clenspy (CAMB PkGrid + legacy kernels)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 from pathlib import Path
 
 import numpy as np
 
-from clens.lensing.cov_DeltaSigma import CovDeltaSigma
-from clens.util.cluster_counts import ClusterCounts
-from clens.util.parameters import CosmoParameters
-from clens.util.richness_selection_adapter import make_intrinsic_relation
-from clens.util.scaling_relation import PrecalculatedCountsBias
-from clens.util.survey import Survey
-
+from clens.covariance import CovarianceAssembler, FrozenTables, LensSample
 
 ROOT = Path(__file__).resolve().parents[1]
-BUZZARD_R_COMOVING_MPC_H = np.array(
-    [0.200, 0.286, 0.409, 0.585, 0.836, 1.196, 1.710, 2.445, 3.497, 5.000]
-)
 
 
-def _make_richness_selection_two_halo(config, selection):
-    """Build the existing RichnessSelection TwoHalo b_sel_ls calculator."""
-    root = Path(
-        selection.get("richness_selection_root")
-        or os.environ.get(
-            "RICHNESS_SELECTION_ROOT",
-            ROOT.parent / "github" / "RichnessSelection",
-        )
-    )
-    source_root = root / "src"
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
-    from richness_selection import (  # pylint: disable=import-outside-toplevel
-        Bias,
-        Cosmology,
-        HMF,
-        MOR,
-        PkGrid,
-        SelBias,
-        TwoHalo,
-        XiNL,
-    )
-    from richness_selection.mor import (  # pylint: disable=import-outside-toplevel
+def _counts_bias_from_selection(config: dict, pkgrid, cosmology):
+    """Counts and bias from the clenspy cluster model (config has a
+    'selection' block: HOD or lognormal MOR, EMG projection kernel when
+    apply_projection, photo-z K_j, optional b_sel_ls large-scale bias).
+
+    Legacy selection parameters are quoted in Msun/h (RichnessSelection
+    convention) — converted to physical here.
+    """
+    import numpy as np
+    from clenspy.clusters import (
+        AnalyticLogNormalKernel,
+        BinDefinition,
+        BinnedClusterModel,
+        EmgRichnessKernel,
+        HodMOR,
+        HodParams,
         LogNormalMOR,
+        LogNormalParams,
+        SelBiasEngine,
+        XiNL,
+        omega_z_const_factory,
     )
-    from richness_selection.sigma_m import (  # pylint: disable=import-outside-toplevel
-        SigmaM,
+    from clenspy.cosmology import PkGrid
+    from clenspy.halo.mass_function import (
+        SigmaGrid,
+        Tinker08MassFunction,
+        Tinker10Bias,
     )
 
-    cosmology = config["cosmology"]
-    rs_cosmo = Cosmology(
-        Om0=float(cosmology["OmegaM"]),
-        H0=100.0 * float(cosmology["h"]),
-        sigma8=float(cosmology["sigma8"]),
-    )
-    pk = PkGrid(rs_cosmo)
-    sigma_m = SigmaM(pk)
-    hmf = HMF(sigma_m)
-    halo_bias = Bias(sigma_m)
-    parameters = dict(selection.get("parameters", {}))
-    model = str(selection["model"]).lower()
+    sel = config["selection"]
+    h = float(config["cosmology"]["h"])
+    params = dict(sel.get("parameters", {}))
+    model = str(sel["model"]).lower()
     if model in {"hod", "mor", "costanzi_hod"}:
-        if "sigma_lambda" in parameters:
-            parameters["sigma_intr"] = parameters.pop("sigma_lambda")
-        mor = MOR(**parameters)
-    elif model in {"lognormal", "log_normal", "logn"}:
-        mor = LogNormalMOR(**parameters)
-    else:
-        raise ValueError(f"unknown intrinsic richness model: {model}")
-    xi_nl = XiNL(rs_cosmo)
-    sel_bias = SelBias(rs_cosmo, pk, hmf, halo_bias, mor, xi_nl=xi_nl)
-    return TwoHalo(rs_cosmo, sel_bias)
-
-
-def _bsel_cache_key(lam_min, lam_max, zmin, zmax, open_bin_lob):
-    return "|".join(
-        f"{float(value):.12g}"
-        for value in (lam_min, lam_max, zmin, zmax, open_bin_lob)
-    )
-
-
-def _bin_bsel_ls(two_halo, lam_min, lam_max, zmin, zmax, open_bin_lob,
-                 cache=None):
-    """Evaluate and cache RichnessSelection's b_sel_ls for one bin."""
-    lob = float(open_bin_lob) if float(lam_max) >= 999.0 else 0.5 * (
-        float(lam_min) + float(lam_max)
-    )
-    zob = 0.5 * (float(zmin) + float(zmax))
-    if cache is None:
-        cache = getattr(two_halo, "_clens_bsel_ls_cache", None)
-        if cache is None:
-            cache = {}
-            setattr(two_halo, "_clens_bsel_ls_cache", cache)
-    key = _bsel_cache_key(lam_min, lam_max, zmin, zmax, open_bin_lob)
-    if key not in cache:
-        if two_halo is None:
-            raise ValueError("missing TwoHalo calculator for uncached b_sel_ls")
-        cache[key] = float(two_halo.b_sel_ls(lob, zob))
-    return float(cache[key])
-
-
-def _load_config(path: Path) -> dict:
-    with path.open(encoding="utf-8") as stream:
-        config = json.load(stream)
-    required = {
-        "survey_area_deg2",
-        "n_src_arcmin2",
-        "sigma_gamma",
-        "source_pz",
-        "cosmology",
-        "z_bins",
-        "lambda_bins",
-        "radial_range_physical_mpc",
-        "n_radial",
-    }
-    missing = required.difference(config)
-    if missing:
-        raise ValueError(f"missing config keys: {sorted(missing)}")
-    if ("counts" not in config) != ("bias" not in config):
-        raise ValueError("counts and bias must be supplied together")
-    if "selection" not in config and "counts" not in config:
-        raise ValueError("config needs counts/bias or an intrinsic selection block")
-    return config
-
-
-def _counts_and_bias(config: dict) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Resolve lens counts/bias from config or the intrinsic MOR model."""
-    if "selection" not in config:
-        return (np.asarray(config["counts"], dtype=float),
-                np.asarray(config["bias"], dtype=float),
-                {"model": "precalculated"})
-
-    selection = config["selection"]
-    relation = make_intrinsic_relation(
-        model=selection["model"],
-        root=selection.get("richness_selection_root"),
-        quadrature_order=selection.get("quadrature_order", 64),
-        apply_projection=selection.get("apply_projection", False),
-        ltr_bracket_sigma=selection.get("ltr_bracket_sigma", 6.0),
-        **selection.get("parameters", {}),
-    )
-    cosmo = CosmoParameters(**config["cosmology"])
-    bsel_config = selection.get("bsel_ls", {})
-    two_halo = (
-        _make_richness_selection_two_halo(config, selection)
-        if bsel_config.get("applied", False)
-        else None
-    )
-    photoz_sigma = selection.get("photoz_sigma")
-    if photoz_sigma is None:
-        raise ValueError(
-            "selection.photoz_sigma is required for the full S_ij path; "
-            "provide one value per richness bin (or a scalar)"
+        if "sigma_lambda" in params:
+            params["sigma_intr"] = params.pop("sigma_lambda")
+        mor = HodMOR(
+            HodParams(
+                M_min=10.0 ** params["log10_Mmin"] / h,
+                M1=10.0 ** params["log10_M1"] / h,
+                alpha=params["alpha"],
+                sigma_intr=params["sigma_intr"],
+                epsilon=params.get("epsilon", 0.0),
+                z_pivot=params.get("z_pivot", 0.4544),
+            )
         )
+    elif model in {"lognormal", "log_normal", "logn"}:
+        base = LogNormalParams.costanzi21(h)
+        mor = LogNormalMOR(
+            LogNormalParams(
+                A_lambda=params.get("A_lambda", base.A_lambda),
+                B_lambda=params.get("B_lambda", base.B_lambda),
+                C_lambda=params.get("C_lambda", base.C_lambda),
+                D_lambda=params.get("D_lambda", base.D_lambda),
+                # legacy configs quote M_pivot in Msun/h
+                M_pivot=params.get("M_pivot", 3.0e14) / h,
+                z_pivot=params.get("z_pivot", base.z_pivot),
+            )
+        )
+    else:
+        raise ValueError(f"unknown selection model: {model}")
+
+    kernel = (
+        EmgRichnessKernel()
+        if sel.get("apply_projection", False)
+        else AnalyticLogNormalKernel()
+    )
+    photoz_sigma = sel["photoz_sigma"]
     if np.ndim(photoz_sigma) == 0:
         photoz_sigma = [float(photoz_sigma)] * len(config["lambda_bins"])
-    else:
-        photoz_sigma = [float(value) for value in photoz_sigma]
-    if len(photoz_sigma) != len(config["lambda_bins"]):
-        raise ValueError(
-            "selection.photoz_sigma must be scalar or have one value per "
-            "richness bin"
+
+    bins = tuple(
+        BinDefinition(lmin, lmax, zmin, zmax, sigma_z=photoz_sigma[il])
+        for (zmin, zmax) in config["z_bins"]
+        for il, (lmin, lmax) in enumerate(config["lambda_bins"])
+    )
+    area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
+    model_obj = BinnedClusterModel(
+        pkgrid=pkgrid,
+        mor=mor,
+        kernel=kernel,
+        bins=bins,
+        cosmology=cosmology,
+        omega_z=omega_z_const_factory(area_sr),
+        n_q=int(sel.get("quadrature_order", 64)),
+    )
+    counts = model_obj.counts().reshape(
+        len(config["z_bins"]), len(config["lambda_bins"])
+    )
+    bias = model_obj.mean_bias().reshape(counts.shape)
+
+    bsel_cfg = sel.get("bsel_ls", {})
+    if bsel_cfg.get("applied", False):
+        pk_nl = PkGrid(
+            backend="camb", cosmo=cosmology, nonlinear=True,
+            k_range=(1e-5, 2e4), z_range=(0.0, 2.0), nk=700, nz=81,
         )
-    if any(value <= 0.0 for value in photoz_sigma):
-        raise ValueError("selection.photoz_sigma values must be positive")
-    counts = np.zeros((len(config["z_bins"]), len(config["lambda_bins"])))
-    bias = np.zeros_like(counts)
-    for iz, (zmin, zmax) in enumerate(config["z_bins"]):
-        for ilam, (lam_min, lam_max) in enumerate(config["lambda_bins"]):
-            cc = ClusterCounts(cosmo_parameters=cosmo, scaling_relation=relation)
-            result = cc.calc_counts_full(
-                zmin=zmin,
-                zmax=zmax,
-                lambda_min=lam_min,
-                lambda_max=lam_max,
-                survey_area_sq_deg=config["survey_area_deg2"],
-                sigma_z=photoz_sigma[ilam],
-                n_mass=selection.get("outer_mass_nodes", 32),
-                n_redshift=selection.get("outer_redshift_nodes", 24),
-                ltr_bracket_sigma=selection.get("ltr_bracket_sigma", 6.0),
-            )
-            counts[iz, ilam] = result[0]
-            bias[iz, ilam] = result[2] if two_halo is None else _bin_bsel_ls(
-                two_halo,
-                lam_min,
-                lam_max,
-                zmin,
-                zmax,
-                bsel_config.get("open_bin_lob", 80.0),
-            )
-    provenance = {
-        "model": selection["model"],
-        "parameters": selection.get("parameters", {}),
-        "quadrature_order": selection.get("quadrature_order", 64),
-        "photoz_sigma": photoz_sigma,
-        "outer_mass_nodes": selection.get("outer_mass_nodes", 32),
-        "outer_redshift_nodes": selection.get("outer_redshift_nodes", 24),
-        "projection_kernel": (
-            "applied through RichnessSelection K_i; redshift through K_j"
-            if selection.get("apply_projection", False)
-            else "intrinsic P(lambda_true|M,z), redshift through K_j"
-        ),
-        "projection": selection.get("projection", {
-            "applied": False,
-            "reason": "intrinsic HOD/log-normal richness path",
-        }),
-        "large_scale_selection_bias": {
-            "applied": bool(two_halo is not None),
-            "definition": "existing RichnessSelection TwoHalo.b_sel_ls",
-            "evaluation": "marginalized over lambda_tr at 30 cMpc/h",
-            "representative_observed_richness": (
-                "bin midpoint; open upper bin uses configured open_bin_lob"
-            ),
-            "open_bin_lob": bsel_config.get("open_bin_lob", 80.0),
-        },
-    }
-    return counts, bias, provenance
+        sg = SigmaGrid(pkgrid, cosmo=cosmology)
+        engine = SelBiasEngine(
+            cosmology=cosmology,
+            xi_nl=XiNL(pk_nl),
+            hmf=Tinker08MassFunction(sg),
+            bias=Tinker10Bias(sg),
+            mor=mor,
+        )
+        open_lob = float(bsel_cfg.get("open_bin_lob", 80.0))
+        for iz, (zmin, zmax) in enumerate(config["z_bins"]):
+            zob = 0.5 * (zmin + zmax)
+            for il, (lmin, lmax) in enumerate(config["lambda_bins"]):
+                lob = open_lob if lmax >= 999.0 else 0.5 * (lmin + lmax)
+                # large-scale plateau of the marginalised selection bias
+                _, b_large = engine.plateaus(lob, zob)
+                bias[iz, il] = b_large
+    return counts, bias
 
 
-def _survey(config: dict) -> Survey:
+def _clenspy_tables(config: dict) -> FrozenTables:
+    """Stage-B provider: CAMB P(k) via clenspy; kernels from the legacy
+    LensingKernel (until the kernel engine moves to clenspy); counts/bias
+    from the config (or clenspy BinnedClusterModel when a selection block
+    is present)."""
+    from astropy.cosmology import w0waCDM
+    from clenspy.cosmology import PkGrid
+
+    from clens.covariance.inputs import from_clenspy
+    from clens.lensing.lensing_kernel import LensingKernel
+    from clens.util.parameters import CosmoParameters
+    from clens.util.survey import Survey
+
+    co = CosmoParameters(**config["cosmology"])
+    cosmology = w0waCDM(
+        H0=100 * co.h, Om0=co.OmegaM, Ode0=co.OmegaDE, w0=co.w0, wa=co.wa
+    )
+    # attach amplitude/tilt so PkGrid does not fall back to its defaults
+    cosmology.sigma8 = co.sigma8
+    cosmology.n_s = co.ns
+    pkgrid = PkGrid(
+        backend="camb",
+        cosmo=cosmology,
+        nonlinear=False,
+        k_range=(1e-5, 2e4),
+        z_range=(0.0, 2.0),
+        nk=700,
+        nz=81,
+    )
+
     pz = config["source_pz"]
-    if pz.get("model") != "whale":
-        raise ValueError("only the upstream whale-shaped source p(z) is supported")
-    return Survey(
-        z_star_src=pz["z_star"],
-        m_src=pz["m"],
-        beta_src=pz["beta"],
+    survey = Survey(
+        z_star_src=pz["z_star"], m_src=pz["m"], beta_src=pz["beta"],
         n_src_arcmin=config["n_src_arcmin2"],
         sigma_gamma=config["sigma_gamma"],
     )
+    lk = LensingKernel(co, survey)
 
+    class _KernelShim:
+        def q_sigma(self, z_l, z_h):
+            lk.calc_kernel_Sigma(z_h)
+            return lk.kernel_Sigma_z_interp(z_l)
 
-def _radial_grid(config: dict, mode: str) -> tuple[float, float, int, np.ndarray]:
-    if mode == "buzzard":
-        ratio = BUZZARD_R_COMOVING_MPC_H[1] / BUZZARD_R_COMOVING_MPC_H[0]
-        edges = np.geomspace(
-            BUZZARD_R_COMOVING_MPC_H[0] / np.sqrt(ratio),
-            BUZZARD_R_COMOVING_MPC_H[-1] * np.sqrt(ratio),
-            len(BUZZARD_R_COMOVING_MPC_H) + 1,
+        def mean_sigma_crit(self, z_h):
+            return float(lk.mean_Sigma_crit(z_h))
+
+        def f_src_behind(self, z_h):
+            return float(lk.fsrc_behind_zh(z_h))
+
+    area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
+    if "selection" in config:
+        counts, bias = _counts_bias_from_selection(config, pkgrid, cosmology)
+    else:
+        counts = np.asarray(config["counts"], dtype=float)
+        bias = np.asarray(config["bias"], dtype=float)
+
+    samples = []
+    zs_ref = np.linspace(1e-4, 3.0, 3000)
+    dv_ref = cosmology.differential_comoving_volume(zs_ref).to_value("Mpc3/sr")
+    from clenspy.halo.mass_function import SigmaGrid
+
+    sg = SigmaGrid(pkgrid, cosmo=cosmology)
+    z_grid = np.asarray(pkgrid.z)
+    pk00 = pkgrid(pkgrid.k[0], z_grid)
+    growth_tab = np.sqrt(pk00 / pk00[0])
+    for iz, (zmin, zmax) in enumerate(config["z_bins"]):
+        zs = np.linspace(zmin, zmax, 200)
+        volume = float(
+            np.trapezoid(np.interp(zs, zs_ref, dv_ref), zs) * area_sr
         )
-        return edges[0], edges[-1], len(BUZZARD_R_COMOVING_MPC_H), BUZZARD_R_COMOVING_MPC_H
-    if mode != "paper":
-        raise ValueError(f"unknown radial grid: {mode}")
-    rmin, rmax = config["radial_range_physical_mpc"]
-    nrad = int(config["n_radial"])
-    if not (0 < rmin < rmax and nrad > 0):
-        raise ValueError("radial_range_physical_mpc and n_radial are invalid")
-    edges = np.geomspace(rmin, rmax, nrad + 1)
-    return rmin, rmax, nrad, np.sqrt(edges[:-1] * edges[1:])
-
-
-def reproduce(config: dict, output_dir: Path, radial_grid: str = "paper") -> dict:
-    cosmo = CosmoParameters(**config["cosmology"])
-    survey = _survey(config)
-    rmin_grid, rmax_grid, nrad, requested_grid = _radial_grid(config, radial_grid)
-    z_bins = config["z_bins"]
-    lambda_bins = config["lambda_bins"]
-    counts, bias, selection_provenance = _counts_and_bias(config)
-    expected_shape = (len(z_bins), len(lambda_bins))
-    if counts.shape != expected_shape or bias.shape != expected_shape:
-        raise ValueError(
-            f"counts/bias shapes must be {expected_shape}; got "
-            f"{counts.shape} and {bias.shape}"
+        r_eff = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
+        M_eff = 4.0 / 3.0 * np.pi * r_eff**3 * sg.rho_m0
+        sigma_w = float(
+            sg(M_eff, 0.0)
+            * np.interp(0.5 * (zmin + zmax), z_grid, growth_tab)
         )
-    if np.any(counts <= 0) or np.any(bias <= 0):
-        raise ValueError("counts and bias must be positive")
-
-    nblocks = len(z_bins) * len(lambda_bins)
-    matrix_shape = (nblocks * nrad, nblocks * nrad)
-    cov_comoving = np.zeros(matrix_shape)
-    cov_cosmic = np.zeros(matrix_shape)
-    cov_shape = np.zeros(matrix_shape)
-    cov_cross = np.zeros(matrix_shape)
-    radii_phys = np.zeros((len(z_bins), nrad))
-    radii_comoving = np.zeros((len(z_bins), nrad))
-    labels = []
-    block_records = []
-
-    for iz, (zmin, zmax) in enumerate(z_bins):
-        zmid = 0.5 * (zmin + zmax)
-        scale_factor = 1.0 / (1.0 + zmid)
-        if radial_grid == "paper":
-            # The upstream demo converts the requested physical Mpc range to
-            # the no-h comoving range consumed by CovDeltaSigma.
-            rp_min_noh = rmin_grid / scale_factor
-            rp_max_noh = rmax_grid / scale_factor
-        else:
-            # Buzzard publishes comoving Mpc/h radii. CovDeltaSigma consumes
-            # no-h comoving Mpc, so only divide by h here.
-            rp_min_noh = rmin_grid / cosmo.h
-            rp_max_noh = rmax_grid / cosmo.h
-
-        for ilam, (lam_min, lam_max) in enumerate(lambda_bins):
-            block = iz * len(lambda_bins) + ilam
-            start = block * nrad
-            stop = start + nrad
-            label = f"z{iz}_lambda{ilam}"
-            labels.append(label)
-
-            sr = PrecalculatedCountsBias(counts[iz, ilam], bias[iz, ilam])
-            cds = CovDeltaSigma(
-                co=cosmo,
-                su=survey,
-                sr=sr,
-                fsky=config["survey_area_deg2"] / 41253.0,
-                survey_area_sq_deg=config["survey_area_deg2"],
-            )
-            rp_mid, _, _ = cds.calc_cov(
-                rp_min=rp_min_noh,
-                rp_max=rp_max_noh,
-                n_rp=nrad,
-                zh_min=zmin,
-                zh_max=zmax,
-                lambda_min=lam_min,
-                lambda_max=lam_max,
-                diag_only=False,
+        for il, (lmin, lmax) in enumerate(config["lambda_bins"]):
+            samples.append(
+                LensSample(
+                    z_min=zmin, z_max=zmax, lam_min=lmin, lam_max=lmax,
+                    counts=float(counts[iz, il]), bias=float(bias[iz, il]),
+                    bN=float(counts[iz, il] * bias[iz, il]),
+                    volume=volume, sigma_w=sigma_w,
+                )
             )
 
-            # Match the upstream validation convention: DeltaSigma is
-            # converted from comoving to physical surface density by a^-2,
-            # hence the covariance by a^-4.
-            block_cosmic = cds.cov_cosmic_shear / scale_factor**4
-            block_shape = cds.cov_shape_noise / scale_factor**4
-            block_cross = cds.cov_cross / scale_factor**4
-            block_total = cds.cov_sum / scale_factor**4
-            for target, source in (
-                (cov_cosmic, block_cosmic),
-                (cov_shape, block_shape),
-                (cov_cross, block_cross),
-                (cov_comoving, cds.cov_sum),
-            ):
-                target[start:stop, start:stop] = source
-
-            radii_comoving[iz] = rp_mid
-            radii_phys[iz] = rp_mid * scale_factor
-            block_records.append(
-                {
-                    "label": label,
-                    "z_min": zmin,
-                    "z_max": zmax,
-                    "lambda_min": lam_min,
-                    "lambda_max": lam_max,
-                    "counts": counts[iz, ilam],
-                    "bias": bias[iz, ilam],
-                    "scale_factor": scale_factor,
-                    "diagonal_shape_noise": np.diag(block_shape).tolist(),
-                    "diagonal_cosmic_shear": np.diag(block_cosmic).tolist(),
-                    "diagonal_cross": np.diag(block_cross).tolist(),
-                }
-            )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    covariance = cov_cosmic + cov_shape + cov_cross
-    np.savez_compressed(
-        output_dir / "covariance.npz",
-        covariance=covariance,
-        covariance_cosmic_shear=cov_cosmic,
-        covariance_shape_noise=cov_shape,
-        covariance_cross=cov_cross,
-        covariance_comoving=cov_comoving,
-        radii_phys_mpc=radii_phys,
-        radii_comoving_mpc_noh=radii_comoving,
-        requested_radii_grid=requested_grid,
-        block_labels=np.asarray(labels),
+    return from_clenspy(
+        pkgrid=pkgrid,
+        cosmology=cosmology,
+        lensing_kernel=_KernelShim(),
+        samples=samples,
+        sigma_gamma=config["sigma_gamma"],
+        n_src_arcmin2=config["n_src_arcmin2"],
+        survey_area_deg2=config["survey_area_deg2"],
     )
-    np.savetxt(output_dir / "covariance.txt", covariance)
-    np.savetxt(output_dir / "covariance_shape_noise.txt", cov_shape)
-    np.savetxt(output_dir / "covariance_cosmic_shear.txt", cov_cosmic)
-    np.savetxt(output_dir / "covariance_cross.txt", cov_cross)
-    np.savetxt(output_dir / "radii_phys_mpc.txt", radii_phys[0])
-    metadata = {
-        "config": config,
-        "matrix_shape": list(covariance.shape),
-        "radial_grid": radial_grid,
-        "ordering": "z-major, richness-fast, radial-fast",
-        "units": "(M_sun / pc^2)^2; physical DeltaSigma",
-        "cross_bin_covariance": "not implemented by upstream CovDeltaSigma; off-block terms are zero",
-        "selection_provenance": selection_provenance,
-        "block_records": block_records,
-    }
-    with (output_dir / "metadata.json").open("w", encoding="utf-8") as stream:
-        json.dump(metadata, stream, indent=2)
-    print(f"wrote {output_dir / 'covariance.npz'}: {covariance.shape}")
-    return metadata
 
 
-def main() -> int:
+def reproduce(
+    config: dict,
+    output_dir: str | Path,
+    provider: str = "clenspy",
+    frozen_dir: str | Path | None = None,
+) -> dict:
+    """Run the full covariance pipeline for one config; returns the
+    assembled matrices (also written to ``output_dir``)."""
+    if provider == "frozen":
+        tables = FrozenTables.load(
+            frozen_dir or ROOT / "validation" / "frozen_inputs"
+        )
+    else:
+        tables = _clenspy_tables(config)
+    rmin, rmax = config["radial_range_physical_mpc"]
+    assembler = CovarianceAssembler(
+        tables=tables,
+        n_radial=int(config["n_radial"]),
+        radial_range_physical_mpc=(float(rmin), float(rmax)),
+    )
+    return assembler.run(output_dir)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--radial-grid", choices=("paper", "buzzard"), default="paper")
+    parser.add_argument("--config", default="configs/des_y1.json")
+    parser.add_argument("--output", default="output/covariance_v2")
+    parser.add_argument(
+        "--provider", choices=("frozen", "clenspy"), default="frozen"
+    )
+    parser.add_argument(
+        "--frozen-dir", default=str(ROOT / "validation" / "frozen_inputs")
+    )
     args = parser.parse_args()
-    config_path = args.config if args.config.is_absolute() else ROOT / args.config
-    output_dir = args.output if args.output.is_absolute() else ROOT / args.output
-    reproduce(_load_config(config_path), output_dir, radial_grid=args.radial_grid)
-    return 0
+
+    config = json.loads(Path(args.config).read_text())
+    result = reproduce(
+        config, args.output, provider=args.provider,
+        frozen_dir=args.frozen_dir,
+    )
+    print(
+        f"wrote {Path(args.output) / 'covariance.npz'}: "
+        f"{result['covariance'].shape}, provider={args.provider}"
+    )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -14,6 +14,9 @@ setup(
                       "numpy",
                       "scipy",
                       "astropy",
+                      "mcfit>=0.0.22",
+                      # model layer: pip install -e ../CLensPy (clenspy)
+                      "clenspy",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

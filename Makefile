@@ -4,7 +4,7 @@ freeze:
 	.venv/bin/python scripts/freeze_inputs.py --config configs/des_y1.json
 
 covariance-v2:
-	.venv/bin/python scripts/reproduce_covariance_v2.py --config configs/des_y1.json \
+	.venv/bin/python scripts/reproduce_covariance.py --config configs/des_y1.json \
 		--output output/covariance_v2 --provider frozen
 
 stage-a:

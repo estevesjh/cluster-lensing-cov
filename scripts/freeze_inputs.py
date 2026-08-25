@@ -13,6 +13,12 @@ Dumps, for the Stage-A refactor-equivalence gates (see the refactor plan):
 
 Run with the legacy virtualenv:
     .venv/bin/python scripts/freeze_inputs.py --config configs/des_y1.json
+
+NOTE: this script depends on the RETIRED legacy modules (clens.ying,
+clens.lensing.lensing_kernel's original form) and can only be re-run from
+a pre-deletion checkout (git log: "M0 freeze"). The frozen snapshots in
+validation/frozen_inputs/ are committed artifacts; regenerating them is
+never needed for the Stage-A gates.
 """
 
 from __future__ import annotations
