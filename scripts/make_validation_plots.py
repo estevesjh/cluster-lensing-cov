@@ -198,7 +198,15 @@ def _plot_ratios(records: list[dict], output: Path, pdf: PdfPages) -> None:
         ax.axhline(1.0, color="k", lw=0.8)
         ax.axhline(0.9, color="0.4", ls="--", lw=0.7)
         ax.axhline(1.1, color="0.4", ls="--", lw=0.7)
-        ax.set_ylim(0.1, 4.0)
+        # robust y-limits: median +/- 2 robust sigma over both ratio sets
+        both = np.concatenate(
+            [record["jk_error_ratio"], record["sac_error_ratio"]]
+        )
+        both = both[np.isfinite(both)]
+        med = np.median(both)
+        sig_rob = 0.7413 * (np.percentile(both, 84) - np.percentile(both, 16))
+        ax.set_ylim(max(0.0, min(med - 2 * sig_rob, 0.85)),
+                    max(med + 2 * sig_rob, 1.15))
         jk = _ratio_summary(record["jk_error_ratio"])
         sac = _ratio_summary(record["sac_error_ratio"])
         ax.text(
@@ -382,7 +390,11 @@ def _plot_buzzard(y1_path: Path, output: Path, pdf: PdfPages) -> dict:
             ax.axhline(1.0, color="k", lw=0.8)
             ax.axhline(0.9, color="0.4", ls="--", lw=0.7)
             ax.axhline(1.1, color="0.4", ls="--", lw=0.7)
-            ax.set_ylim(0.2, max(10.0, 1.1 * np.max(ratio)))
+            # robust per-panel y-limits: median +/- 2 robust sigma
+            med = np.median(ratio)
+            sig_rob = 0.7413 * (np.percentile(ratio, 84) - np.percentile(ratio, 16))
+            ax.set_ylim(max(0.0, min(med - 2 * sig_rob, 0.85)),
+                        max(med + 2 * sig_rob, 1.15))
             ax.set_xlim(0.18, 5.6)
             ax.set_xticks([0.2, 0.5, 1.0, 2.0, 5.0])
             ax.set_xticklabels(["0.2", "0.5", "1", "2", "5"])

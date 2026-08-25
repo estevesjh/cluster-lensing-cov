@@ -73,7 +73,13 @@ def main() -> int:
         ax.set_xlabel(r"$R$ [physical Mpc]")
     for ax in axes[:, 0]:
         ax.set_ylabel(r"$\sigma_{\rm analytic}/\sigma_{\rm JK,phys}$")
-    axes[0, 0].set_ylim(0, max(2.0, 1.08 * max(ratios)))
+    # robust y-limits: median +/- 2 robust sigma (outliers clipped from view)
+    arr = np.asarray(ratios)
+    med = np.median(arr)
+    sig_rob = 0.7413 * (np.percentile(arr, 84) - np.percentile(arr, 16))
+    lo = max(0.0, min(med - 2 * sig_rob, 0.85))
+    hi = max(med + 2 * sig_rob, 1.15)
+    axes[0, 0].set_ylim(lo, hi)
     fig.suptitle(
         f"Plain physical-unit error ratio: analytic {args.survey_label} / Buzzard JK",
         fontsize=14,
