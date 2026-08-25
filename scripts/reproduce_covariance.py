@@ -24,6 +24,118 @@ from clens.covariance import CovarianceAssembler, FrozenTables, LensSample
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _build_mor(sel: dict, h: float):
+    """MOR from a selection/intrinsic config block (Msun/h -> physical)."""
+    from clenspy.clusters import HodMOR, HodParams, LogNormalMOR, LogNormalParams
+
+    params = dict(sel.get("parameters", {}))
+    model = str(sel["model"]).lower()
+    if model in {"hod", "mor", "costanzi_hod"}:
+        if "sigma_lambda" in params:
+            params["sigma_intr"] = params.pop("sigma_lambda")
+        return HodMOR(
+            HodParams(
+                M_min=10.0 ** params["log10_Mmin"] / h,
+                M1=10.0 ** params["log10_M1"] / h,
+                alpha=params["alpha"],
+                sigma_intr=params["sigma_intr"],
+                epsilon=params.get("epsilon", 0.0),
+                z_pivot=params.get("z_pivot", 0.4544),
+            )
+        )
+    if model in {"lognormal", "log_normal", "logn"}:
+        base = LogNormalParams.costanzi21(h)
+        return LogNormalMOR(
+            LogNormalParams(
+                A_lambda=params.get("A_lambda", base.A_lambda),
+                B_lambda=params.get("B_lambda", base.B_lambda),
+                C_lambda=params.get("C_lambda", base.C_lambda),
+                D_lambda=params.get("D_lambda", base.D_lambda),
+                M_pivot=params.get("M_pivot", 3.0e14) / h,
+                z_pivot=params.get("z_pivot", base.z_pivot),
+            )
+        )
+    raise ValueError(f"unknown MOR model: {model}")
+
+
+def _population_model(config: dict, block: dict, pkgrid, cosmology):
+    """BinnedClusterModel for a selection/intrinsic block (population
+    weights: S_ij-weighted P(M) per bin)."""
+    import numpy as np
+    from clenspy.clusters import (
+        AnalyticLogNormalKernel,
+        BinDefinition,
+        BinnedClusterModel,
+        EmgRichnessKernel,
+        omega_z_const_factory,
+    )
+
+    h = float(config["cosmology"]["h"])
+    mor = _build_mor(block, h)
+    kernel = (
+        EmgRichnessKernel()
+        if block.get("apply_projection", False)
+        else AnalyticLogNormalKernel()
+    )
+    photoz_sigma = block.get("photoz_sigma", 0.03)
+    if np.ndim(photoz_sigma) == 0:
+        photoz_sigma = [float(photoz_sigma)] * len(config["lambda_bins"])
+    bins = tuple(
+        BinDefinition(lmin, lmax, zmin, zmax, sigma_z=photoz_sigma[il])
+        for (zmin, zmax) in config["z_bins"]
+        for il, (lmin, lmax) in enumerate(config["lambda_bins"])
+    )
+    area_sr = config["survey_area_deg2"] * (np.pi / 180.0) ** 2
+    return BinnedClusterModel(
+        pkgrid=pkgrid,
+        mor=mor,
+        kernel=kernel,
+        bins=bins,
+        cosmology=cosmology,
+        omega_z=omega_z_const_factory(area_sr),
+        n_q=int(block.get("quadrature_order", 64)),
+    )
+
+
+def _intrinsic_covs(config: dict, pkgrid, cosmology, counts):
+    """Per-bin intrinsic (halo-to-halo) covariance callables, or Nones.
+
+    The population comes from the config's 'selection' block, or a
+    dedicated 'intrinsic' block for measured-count configs (the
+    McClintock construction: model population, observed N_cl).
+    """
+    import copy
+
+    import numpy as np
+    from clenspy.clusters import IntrinsicProfileVariance
+
+    block = config.get("selection") or config.get("intrinsic")
+    n_bins = len(config["z_bins"]) * len(config["lambda_bins"])
+    if block is None:
+        return [None] * n_bins
+
+    model = _population_model(config, block, pkgrid, cosmology)
+    weights = copy.deepcopy(model.weights)
+    # N_cl from the counts actually used for the covariance (measured
+    # tables when present, else the model's own counts)
+    weights.norm[:] = np.asarray(counts, dtype=float).ravel()
+
+    sigma_lnc = float(block.get("sigma_lnc", 0.16))
+    sigma_amp = float(block.get("sigma_amp", 0.0))
+    covs = []
+    for iz, (zmin, zmax) in enumerate(config["z_bins"]):
+        ipv = IntrinsicProfileVariance(
+            weights, model.twohalo, model.bias, model.sigma_grid.rho_m0,
+            z_eff=0.5 * (zmin + zmax), cosmology=cosmology,
+            concentration=model.concentration, sigma_lnc=sigma_lnc,
+            sigma_amp=sigma_amp,
+        )
+        for il in range(len(config["lambda_bins"])):
+            b = iz * len(config["lambda_bins"]) + il
+            covs.append(lambda R, _ipv=ipv, _b=b: _ipv.cov(R, _b))
+    return covs
+
+
 def _counts_bias_from_selection(config: dict, pkgrid, cosmology):
     """Counts and bias from the clenspy cluster model (config has a
     'selection' block: HOD or lognormal MOR, EMG projection kernel when
@@ -202,9 +314,31 @@ def _clenspy_tables(config: dict) -> FrozenTables:
     lk = LensingKernel(co, survey)
 
     class _KernelShim:
+        """Sigma-weighted lensing kernel with the physical source cut.
+
+        Unlike the legacy ``calc_kernel_Sigma`` (which integrated sources
+        at z_s < z_h with negative, near-singular Sigma_crit weights),
+        only sources BEHIND both the lens plane and the cluster
+        contribute: z_s > max(z_l, z_h) — the McClintock et al. (2019)
+        convention ("consistently define it as zero if z_s <= z_l").
+        """
+
         def q_sigma(self, z_l, z_h):
-            lk.calc_kernel_Sigma(z_h)
-            return lk.kernel_Sigma_z_interp(z_l)
+            from clens.util import constants as cn
+
+            z_l = np.atleast_1d(np.asarray(z_l, dtype=float))
+            out = np.empty(z_l.size)
+            chi_h = cosmology.comoving_distance(z_h).to_value("Mpc")
+            pref = cn.c**2 / (4.0 * np.pi * cn.G)
+            for i, zl in enumerate(z_l):
+                zs = np.linspace(max(zl, z_h) + 0.01, survey.zs_max, 100)
+                ns = survey.pz_src(zs)
+                chi_l = cosmology.comoving_distance(zl).to_value("Mpc")
+                chi_s = cosmology.comoving_distance(zs).to_value("Mpc")
+                sc_l = pref * chi_s / chi_l / (chi_s - chi_l) / (1.0 + zl)
+                sc_h = pref * chi_s / chi_h / (chi_s - chi_h) / (1.0 + z_h)
+                out[i] = np.trapezoid(ns / sc_l * sc_h, zs)
+            return out if out.size > 1 else float(out[0])
 
         def mean_sigma_crit(self, z_h):
             return float(lk.mean_Sigma_crit(z_h))
@@ -236,6 +370,8 @@ def _clenspy_tables(config: dict) -> FrozenTables:
             "by clenspy (add a 'selection' block to compute them)"
         )
 
+    intrinsic_covs = _intrinsic_covs(config, pkgrid, cosmology, counts)
+
     samples = []
     zs_ref = np.linspace(1e-4, 3.0, 3000)
     dv_ref = cosmology.differential_comoving_volume(zs_ref).to_value("Mpc3/sr")
@@ -266,6 +402,7 @@ def _clenspy_tables(config: dict) -> FrozenTables:
                     bN=float(counts[iz, il] * bias[iz, il]),
                     volume=volume, sigma_w=sigma_w,
                     pk_hh=pk_hh, pk_hm=pk_hm,
+                    intrinsic_cov=intrinsic_covs[ib],
                 )
             )
 

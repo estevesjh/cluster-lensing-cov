@@ -6,6 +6,9 @@
     0.03,
     30.0
   ],
-  "provider": {},
+  "provider": {
+    "counts_bias_source": "precalculated config tables (counts/bias keys)",
+    "pk_backend": "camb (clenspy PkGrid)"
+  },
   "ordering": "z-major, richness-fast, radial-fast"
 }

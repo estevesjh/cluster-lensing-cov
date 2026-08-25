@@ -41,10 +41,11 @@ class DeltaSigmaCovBlocks:
     cosmic_shear: np.ndarray
     shape_noise: np.ndarray
     cross: np.ndarray
+    intrinsic: np.ndarray  # halo-to-halo profile variance (zeros if absent)
 
     @property
     def total(self) -> np.ndarray:
-        return self.cosmic_shear + self.shape_noise + self.cross
+        return self.cosmic_shear + self.shape_noise + self.cross + self.intrinsic
 
 
 class GaussianDeltaSigmaCov:
@@ -113,11 +114,17 @@ class GaussianDeltaSigmaCov:
         cov_cross = engine.covariance(c_cross**2)
 
         rp_edges = theta_edges * chi_h
+        rp_mid = np.sqrt(rp_edges[:-1] * rp_edges[1:])
+        if sample.intrinsic_cov is not None:
+            cov_intr = np.asarray(sample.intrinsic_cov(rp_mid), dtype=float)
+        else:
+            cov_intr = np.zeros((n_rp, n_rp))
         return DeltaSigmaCovBlocks(
-            rp_mid=np.sqrt(rp_edges[:-1] * rp_edges[1:]),
+            rp_mid=rp_mid,
             rp_min=rp_edges[:-1],
             rp_max=rp_edges[1:],
             cosmic_shear=cov_cosmic * MPC2_TO_PC2,
             shape_noise=cov_shape * MPC2_TO_PC2,
             cross=cov_cross * MPC2_TO_PC2,
+            intrinsic=cov_intr * MPC2_TO_PC2,
         )

@@ -1,33 +1,112 @@
 {
-  "name": "DES Y1",
-  "survey_area_deg2": 1437.0,
-  "n_src_arcmin2": 6.28,
-  "sigma_gamma": 0.3,
-  "source_pz": {
-    "model": "whale",
-    "z_star": 0.74,
-    "m": 1.68,
-    "beta": 2.33,
-    "provenance": "DES Y1 source-distribution fit used by upstream validation commit b7fd6e4"
-  },
-  "cosmology": {
-    "h": 0.7,
-    "OmegaDE": 0.7,
-    "OmegaM": 0.3,
-    "sigma8": 0.8
-  },
-  "z_bins": [[0.2, 0.35], [0.35, 0.5], [0.5, 0.65]],
-  "lambda_bins": [[20, 30], [30, 45], [45, 60], [60, 1000]],
-  "counts": [
-    [762, 376, 123, 91],
-    [1549, 672, 187, 148],
-    [1612, 687, 205, 92]
+ "name": "DES Y1",
+ "survey_area_deg2": 1437.0,
+ "n_src_arcmin2": 6.28,
+ "sigma_gamma": 0.3,
+ "source_pz": {
+  "model": "whale",
+  "z_star": 0.74,
+  "m": 1.68,
+  "beta": 2.33,
+  "provenance": "DES Y1 source-distribution fit used by upstream validation commit b7fd6e4"
+ },
+ "cosmology": {
+  "h": 0.7,
+  "OmegaDE": 0.7,
+  "OmegaM": 0.3,
+  "sigma8": 0.8
+ },
+ "z_bins": [
+  [
+   0.2,
+   0.35
   ],
-  "bias": [
-    [2.80019023, 3.67337471, 4.20838351, 5.94689383],
-    [2.72935697, 3.56092105, 4.36959595, 5.84793938],
-    [2.54976559, 3.59665320, 4.39331755, 5.71029621]
+  [
+   0.35,
+   0.5
   ],
-  "radial_range_physical_mpc": [0.03, 30.0],
-  "n_radial": 15
+  [
+   0.5,
+   0.65
+  ]
+ ],
+ "lambda_bins": [
+  [
+   20,
+   30
+  ],
+  [
+   30,
+   45
+  ],
+  [
+   45,
+   60
+  ],
+  [
+   60,
+   1000
+  ]
+ ],
+ "counts": [
+  [
+   762,
+   376,
+   123,
+   91
+  ],
+  [
+   1549,
+   672,
+   187,
+   148
+  ],
+  [
+   1612,
+   687,
+   205,
+   92
+  ]
+ ],
+ "bias": [
+  [
+   2.80019023,
+   3.67337471,
+   4.20838351,
+   5.94689383
+  ],
+  [
+   2.72935697,
+   3.56092105,
+   4.36959595,
+   5.84793938
+  ],
+  [
+   2.54976559,
+   3.5966532,
+   4.39331755,
+   5.71029621
+  ]
+ ],
+ "radial_range_physical_mpc": [
+  0.03,
+  30.0
+ ],
+ "n_radial": 15,
+ "intrinsic": {
+  "model": "lognormal",
+  "parameters": {
+   "A_lambda": 76.9,
+   "B_lambda": 1.02,
+   "C_lambda": 0.29,
+   "D_lambda": 0.23,
+   "M_pivot": 300000000000000.0,
+   "z_pivot": 0.45
+  },
+  "photoz_sigma": 0.03,
+  "apply_projection": false,
+  "sigma_lnc": 0.16,
+  "provenance": "halo-to-halo profile-variance population model (Costanzi 2021 lognormal M-lambda; c-scatter Diemer-Kravtsov sigma_lnc=0.16); N_cl from the measured counts tables -- the McClintock et al. 2019 SAC construction; sigma_amp=0.20 amplitude stochasticity proxies the Gruen 2015 halo-ellipticity/orientation profile scatter",
+  "sigma_amp": 0.2
+ }
 }

@@ -44,6 +44,7 @@ class CovarianceAssembler:
         cov_cosmic = np.zeros(shape)
         cov_shape = np.zeros(shape)
         cov_cross = np.zeros(shape)
+        cov_intr = np.zeros(shape)
         radii_phys = np.zeros((nz, nrad))
         radii_comoving = np.zeros((nz, nrad))
         labels = []
@@ -73,11 +74,12 @@ class CovarianceAssembler:
                 cov_cosmic[sl, sl] = blocks.cosmic_shear / a**4
                 cov_shape[sl, sl] = blocks.shape_noise / a**4
                 cov_cross[sl, sl] = blocks.cross / a**4
+                cov_intr[sl, sl] = blocks.intrinsic / a**4
                 cov_comoving[sl, sl] = blocks.total
                 radii_comoving[iz] = blocks.rp_mid
                 radii_phys[iz] = blocks.rp_mid * a
 
-        covariance = cov_cosmic + cov_shape + cov_cross
+        covariance = cov_cosmic + cov_shape + cov_cross + cov_intr
         counts_cov = NCountsCov(
             [
                 sample_by_bin[(zp[0], zp[1], lp[0], lp[1])]
@@ -90,6 +92,7 @@ class CovarianceAssembler:
             covariance_cosmic_shear=cov_cosmic,
             covariance_shape_noise=cov_shape,
             covariance_cross=cov_cross,
+            covariance_intrinsic=cov_intr,
             covariance_comoving=cov_comoving,
             radii_phys_mpc=radii_phys,
             radii_comoving_mpc_noh=radii_comoving,

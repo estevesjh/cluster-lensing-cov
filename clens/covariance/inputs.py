@@ -79,6 +79,8 @@ class LensSample:
     sigma_w: float  # sigma_R(R_eff) * D(z_mid) window r.m.s.
     pk_hh: Callable | None = None  # P_hh(k, z) [Mpc^3], 2-halo
     pk_hm: Callable | None = None  # P_hSigma(k, z) [Mpc^3], 2h + 1h
+    intrinsic_cov: Callable | None = None  # C_intr(R) [(Msun/Mpc^2)^2],
+    # halo-to-halo profile variance / N_cl (clenspy IntrinsicProfileVariance)
 
     @property
     def z_mid(self) -> float:
